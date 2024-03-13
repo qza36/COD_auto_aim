@@ -1,0 +1,540 @@
+/*
+*	@Author: USTL-COD
+*	@Date:	 2022.06.05
+*	@Brief:  multi-thread starts//奇点，利用互斥锁mutex加锁线程
+*/
+
+#include "AngleSolver.h"
+#include "FrameReceiver.h"
+#include "SerialTest.h"
+
+using namespace cv;
+using namespace std;
+
+mutex mtx_pre;
+bool rwable_pre=false;
+condition_variable cv_pre;
+mutex mtx_serialr;
+bool rwable_serialr=false;
+condition_variable cv_serialr;
+mutex mtx_serialt;
+bool rwable_serialt=false;
+condition_variable cv_serialt;
+mutex mtx_date;
+bool rwable_date=false;
+condition_variable cv_date;
+
+int frameSize=6,stateNum = 5, measureNum = 5, controlNum = 5;
+double timecolck=0;//as the same of frame
+Mat src = Mat::zeros(480, 640, CV_8UC3);   // Transfering buffer
+KalmanFilter KF(stateNum, measureNum, controlNum);//状态值测量值5×1向量(x,y,△x,△y,distance)
+FrameReceiver frameStream(frameSize);
+ArmorMedia armorReceive;
+ArmorMedia armorTransmit;
+//import armor detector
+ArmorDetector armorDetector;
+//import angle solver
+AngleSolver angleSolver;
+SerialPort myserial;
+typedef  struct {
+    double filterValue;  //k-1ʱ�̵��˲�ֵ������k-1ʱ�̵�ֵ
+    double kalmanGain;   //   Kalamn����
+    double A;   // x(n)=A*x(n-1)+u(n),u(n)~N(0,Q)
+    double H;   // z(n)=H*x(n)+w(n),w(n)~N(0,R)
+    double Q;   //Ԥ����������ƫ���ķ���
+    double R;   //��������ƫ�(ϵͳ����Ժ���ͨ������ͳ��ʵ������)
+    double P;   //��������Э����
+}  KalmanInfo;
+double KalmanFilter(KalmanInfo* kalmanInfo, double lastMeasurement);
+void Init_KalmanInfo(KalmanInfo* info, double Q, double R);
+/**
+* @brief Init_KalmanInfo   ��ʼ���˲����ĳ�ʼֵ
+* @param info  �˲���ָ��
+* @param Q Ԥ���������� ��ϵͳ�ⲿ�ⶨ����
+* @param R ������������ ��ϵͳ�ⲿ�ⶨ����
+*/
+void Init_KalmanInfo(KalmanInfo* info, double Q, double R)
+{
+    info->A = 1;  //����������
+    info->H = 1;  //
+    info->P = 10;  //����״̬����ֵ�����ķ����ĳ�ʼֵ����ҪΪ0���ⲻ����
+    info->Q = Q;    //Ԥ�⣨���̣��������� Ӱ���������ʣ����Ը���ʵ����������
+    info->R = R;    //�������۲⣩�������� ����ͨ��ʵ���ֶλ���
+    info->filterValue = 0;// �����ĳ�ʼֵ
+}
+double KalmanFilter(KalmanInfo* kalmanInfo, double lastMeasurement)
+{
+    //Ԥ����һʱ�̵�ֵ
+    double predictValue = kalmanInfo->A * kalmanInfo->filterValue;   //x��������������һ��ʱ�����ĺ�������ֵ��������Ϣ�������˴���Ҫ���ݻ�վ�߶���һ���޸�
+
+    //��Э����
+    kalmanInfo->P = kalmanInfo->A * kalmanInfo->A * kalmanInfo->P + kalmanInfo->Q;  //�������������� p(n|n-1)=A^2*p(n-1|n-1)+q
+    double preValue = kalmanInfo->filterValue;  //��¼�ϴ�ʵ��������ֵ
+
+    //����kalman����
+    kalmanInfo->kalmanGain = kalmanInfo->P * kalmanInfo->H / (kalmanInfo->P * kalmanInfo->H * kalmanInfo->H + kalmanInfo->R);  //Kg(k)= P(k|k-1) H�� / (H P(k|k-1) H�� + R)
+    //�����������������˲�ֵ
+    kalmanInfo->filterValue = predictValue + (lastMeasurement - predictValue) * kalmanInfo->kalmanGain;  //���ò�������Ϣ���ƶ�x(t)�Ĺ��ƣ������������ƣ�����ֵҲ��������  X(k|k)= X(k|k-1)+Kg(k) (Z(k)-H X(k|k-1))
+    //���º�������
+    kalmanInfo->P = (1 - kalmanInfo->kalmanGain * kalmanInfo->H) * kalmanInfo->P;//��������������  P[n|n]=(1-K[n]*H)*P[n|n-1]
+
+    return  kalmanInfo->filterValue;
+}
+double getDistance(Point A, Point B)
+{
+    double dis;
+    dis = pow((A.x - B.x), 2) + pow((A.y - B.y), 2);
+    return sqrt(dis);
+}
+
+double Square(Point A)
+{
+    double dis;
+    dis = pow(A.x, 2) + pow(A.y, 2);
+    cout << "R=" << dis << endl;
+    return sqrt(dis);
+}
+Point P_R(Mat& image)
+{
+    Mat image1;
+    image.copyTo(image1);
+    threshold(image, image, 50, 255, THRESH_BINARY);
+    imshow("image1", image);
+    vector<vector<Point>> contours2;
+    vector<Vec4i> hierarchy2;
+    findContours(image, contours2, hierarchy2, RETR_TREE, CHAIN_APPROX_SIMPLE);
+
+
+    RotatedRect rect_tmp2;//ת���Ƕ�
+    bool findTarget = 0;//Ŀ��
+
+    //ʶ���������� R
+    vector<Point>P_R;
+    Point centerP;
+    RotatedRect rect_tmp, rect;
+    Point PP;
+    bool flag_R = false;
+    for (int i = 0; i < contours2.size(); i++)
+    {
+        float area = contourArea(contours2[i]);
+        // cout << "contours2[" << i << "]:" << area<<endl;
+        rect = minAreaRect(contours2[i]);
+
+
+    }
+
+    if (hierarchy2.size()) {
+        for (int i = 0, j = 0; i >= 0; i = hierarchy2[i][0], j++)
+        {
+
+            rect_tmp2 = minAreaRect(contours2[i]);
+            Point2f P[4];
+            rect_tmp2.points(P);
+
+            Point2f srcRect[4];
+            Point2f dstRect[4];
+
+            double width;
+            double height;
+
+            //������ȡ��ҶƬ�Ŀ���
+            width = getDistance(P[0], P[1]);
+            height = getDistance(P[1], P[2]);
+            if (width > height)
+            {
+                srcRect[0] = P[0];
+                srcRect[1] = P[1];
+                srcRect[2] = P[2];
+                srcRect[3] = P[3];
+            }
+            else
+            {
+                swap(width, height);
+                srcRect[0] = P[1];
+                srcRect[1] = P[2];
+                srcRect[2] = P[3];
+                srcRect[3] = P[0];
+            }
+
+            double area = height * width;
+            if (area > 15 && area < 50)//R��//�����ϱ�ֵ�����ģ��ģ�����svmѵ���õ�R
+            {
+                P_R.push_back(rect_tmp2.center);
+
+                //circle(image1, Point(rect_tmp2.center.x, rect_tmp2.center.y), 3, Scalar(255, 0, 0), 2);
+               // imshow("image1", image1);
+                // cout << rect_tmp2.center.x << rect_tmp2.center.y << endl;
+                return rect_tmp2.center;
+            }
+            else if (P_R.size() > 1)break;
+        }
+    }
+
+
+} Mat capture;
+Point2f minbuff(double& sinta1, double& R, Point q, double& V) {
+    double  X0 = 0, Y0 = 0, sinta2 = 0, T = -30;
+
+    sinta2 = V * T / R + sinta1;//�õ��ٶȺ󣬽���Ҫ����Ŀ����ǰ��ʱ�����ú�
+    //cout << "sinta1=" << sinta1 << endl;
+    X0 = (cos(sinta2) * R + q.x); Y0 = (sin(sinta2) * R + q.y);//������Ԥ������ͼ���е�����ϵ��
+                                                   //�õ�Ԥ��Ŀ��
+    //cout << "X0=" << X0 << "Y0=" << Y0 << endl;
+    return Point2f(X0, Y0);
+    //cv::circle(binary, Point2f(X0, Y0), 1, cv::Scalar(0, 255, 255), 5);
+
+}
+Point2f maxbuff(double& sinta1, double& R, Point q, double& A, double& W, time_t end1) {
+    double T = 30, X0 = 0, Y0 = 0, Totaldistance = 0, distance = 0, sinta2 = 0;
+    sinta2 = (((-1 / W) * A * cos(W * T) + 2.090 * T - A * T) - ((-1 / W) * A * cos(W * end1) + 2.090 * end1 - A * end1)) / R + sinta1;
+    X0 = (cos(sinta2) * R + q.x); Y0 = (sin(sinta2) * R + q.y);
+    return Point2f(X0, Y0);
+}
+
+int main()
+{
+    XInitThreads();
+    thread thread1(imageUpdatingThread);
+    thread thread2(preimgUpdatingThread);
+    thread thread3(serialRUpdatingThread);
+    thread thread4(datasolutingThread);
+    thread thread5(serialTUpdatingThread);
+    thread1.join();
+    thread2.join();
+    thread3.join();
+    thread4.join();
+    thread5.join();
+    return 0;
+}
+Mat element1 = getStructuringElement(MORPH_ELLIPSE, Size(3, 3));
+Mat element2 = getStructuringElement(MORPH_ELLIPSE, Size(3, 3));
+void beneficiate(Mat capture) {
+    time_t begin, end, begin1 = 0, end1 = 0;
+    Point2f center[10];
+    double ret, ret1[10], Vmin2[1];
+
+    //cap >> capture;
+    Mat image, binary, image1;
+    Mat midImage1, midImage2;
+    int stateNum = 4;
+    int measureNum = 2;
+
+
+
+    while (!capture.empty())
+    {
+        vector<Mat> imgChannels;
+        capture.copyTo(image);
+        begin = clock();//��Ҫ���ô������е�ʱ���������ٶ�
+        image.copyTo(binary);
+        resize(image, image, Size(image.cols * 0.5, binary.rows * 0.5));
+        resize(binary, binary, Size(binary.cols * 0.5, binary.rows * 0.5));
+        // resize(midImage2, midImage2, Size(midImage2.cols * 0.5, midImage2.rows * 0.5));
+        int _enemy_color = 2;
+        split(image, imgChannels);//ͨ������
+
+        if (_enemy_color == 0)//��ɫͨ�������������ų�������ɫ����
+        {
+            midImage1 = imgChannels[0] - imgChannels.at(2);
+        }
+        else if (_enemy_color == 2)
+        {
+            midImage1 = imgChannels.at(2) - imgChannels.at(0);
+        }
+
+        midImage1.copyTo(midImage2);
+        Point2f q, Vcenter;
+        q = P_R(midImage2);//�õ�Բ�ģ���Ϊʶ���ҿ����ǰǵ����״��룬���״����ֱ�
+                         //ʶ�����ǲ�ͬ��ɫ�����Եõ�Ŀ������������һ�״����ܺܺõ�ʶ��
+                         //��Ҷ������û�а취ʶ��Բ�ģ��Ҿͽ�Բ�ĵ����ó���ʶ�����õ�ԭ���롣
+        cv::circle(binary, Point(q.x, q.y), 5, cv::Scalar(0, 111, 255), -1);
+
+        threshold(midImage1, midImage1, 50, 255, THRESH_BINARY);//80
+        dilate(midImage1, midImage1, element1);
+        erode(midImage1, midImage1, element2);
+        imshow("2", midImage1);
+        floodFill(midImage1, Point(5, 50), Scalar(255), 0, FLOODFILL_FIXED_RANGE);
+        threshold(midImage1, midImage1, 80, 255, THRESH_BINARY_INV);
+        imshow("1", midImage1);
+        vector<vector<Point>> contours;
+        findContours(midImage1, contours, RETR_LIST, CHAIN_APPROX_NONE);
+
+        for (size_t i = 0; i < contours.size(); i++) {
+
+            vector<Point> points;
+            double area = contourArea(contours[i]);
+
+            if (area < 100 || 400 < area) continue;
+
+            drawContours(image, contours, static_cast<int>(i), Scalar(0), 2);
+
+            points = contours[i];
+            RotatedRect rrect = fitEllipse(points);
+            cv::Point2f* vertices = new cv::Point2f[4];
+            rrect.points(vertices);
+            float aim = rrect.size.height / rrect.size.width;
+            if (aim > 1.7 && aim < 2.6) {//2.6
+                for (int j = 0; j < 4; j++)
+                {
+
+                    cv::line(binary, vertices[j], vertices[(j + 1) % 4], cv::Scalar(0, 255, 0), 4);
+                }
+                float middle = 100000;
+
+                for (size_t j = 1; j < contours.size(); j++) {
+
+                    vector<Point> pointsA;
+                    double area = contourArea(contours[j]);//����
+                    cout << "area=" << area << endl;
+                    if (area < 50 || 300 < area) continue;
+                    // cout << "area=" << area << endl;
+                    pointsA = contours[j];
+                    RotatedRect rrectA = fitEllipse(pointsA);//��Բ
+                    float aimA = rrectA.size.height / rrectA.size.width;
+
+                    if (aimA > 4.0) {//3.0||aimA<1.9
+                        //cout << "tiaoshi2=" << aimA << endl;
+                        float distance = sqrt((rrect.center.x - rrectA.center.x) * (rrect.center.x - rrectA.center.x) +
+                            (rrect.center.y - rrectA.center.y) * (rrect.center.y - rrectA.center.y));
+
+                        if (middle > distance) {
+                            middle = distance;
+                        }
+
+                    }
+                }
+                if (middle > 42) {                               //��������ҲҪ����ʵ��������,��ͼ���ߴ�������Զ���йء�60
+                    cv::circle(binary, Point(rrect.center.x, rrect.center.y), 15, cv::Scalar(0, 0, 255), 4);
+                    // cout <<" c = "<<rrect.center<< endl;
+                     //��Բ��ʶ�������ﶼ��ʶ����Ҷ�ģ�������Բ��������ɸѡͼ������û�о��忴���Ĵ����߼���
+                    int n, N = 10;           //�ǵ�Ȼ������ʵ�֣����ã�Ч�������ԣ���ֱ������
+                    double R = 0;            //Ҫ�õ�Բ�ģ�����Ϊ��Ҫ�õ�����������ϵ
+                    Vcenter = rrect.center - q;
+                    //cout << " Vcenter = " << Vcenter << endl;
+                    center[9] = Vcenter;
+                    R = Square(Vcenter);
+                    end = clock();
+                    // cout<< " begin = " << begin << endl;
+                    // cout << " end = " << end << endl;
+                    ret = double(end - begin);
+                    ret1[9] = ret;
+                    double sumret = 0, sumx1 = 0, sumx2 = 0, sumy1 = 0, sumy2 = 0, V, Vx, Vy, Vsumx, Vsumy, sinta1 = 0, acceleration = 0, A, W;
+
+                    for (n = 0; n < 10; n++) {
+                                                                  //��Ϊͼ��ɸѡԭ�򣬵õ�����Ҷ
+                                                                //�������ݲ��ȶ��������Ҳ���ȡ5��ͼ������Ҷ����λ��
+                        sumret += (ret1[n] / 10);              //��ƽ��ֵ���ȶ���Ҷ��������ϵ��λ��
+                                                             //10������Ϊ��Ҫ�õ�λ����dr��dr=rĩ-r��
+                    }                                        //ע�������õ�������ϵ�Ѿ�������ͼ��������ϵ��
+                                                             //Ȼ���ڽ���dv=dr/dt,ע����Ϊ�в�ͬ��ͼ���ۼӣ���������ʱ��
+                    for (n = 0; n < 9; n++) {                //Ҳ��Ҫ�ۼ�
+                        ret1[n] = ret1[n + 1];
+                    }
+                    for (n = 0; n < 10; n++) {
+
+                        if (n < 5) {
+                            sumx1 += center[n].x / 5;
+                            sumy1 += center[n].y / 5;
+                        }
+                        else {
+                            sumx2 += center[n].x / 5;
+                            sumy2 += center[n].y / 5;
+                        }
+                    }
+
+                    Vsumx = (sumx2 - sumx1);
+                    Vsumy = (sumy2 - sumy1);
+
+                    for (n = 0; n < N - 1; n++) {
+                        center[n] = center[n + 1];//�ƶ���������Ԫ�أ���Ϊ����ͼ���仯����Ҫ�����͸�������
+                    }                             //
+                    Vx = pow(Vsumx, 2);
+                    Vy = pow(Vsumy, 2);
+
+                    V = sqrt(Vx + Vy) / sumret;//dv=dr/dt,�õ��ٶ�
+
+                    sinta1 = atan(Vcenter.y / Vcenter.x);//Ϊ�˵õ�ͼ������ϵ�������������ٶȵĽǶ�
+                    if (Vcenter.x < 0) {
+                        sinta1 = sinta1 + pi;//����һ��Ҫ+pi����Ϊ��һ�����������������������ĵ��ĽǶȶ���һ���ĵ����и��ŵĲ���
+                    }
+                    acceleration = V / sumret;
+                    Point2f pxy;
+                    KalmanInfo KF;
+                    int cf = 0;
+                    if (cf == 0) {
+                        Init_KalmanInfo(&KF, 1, 30);
+
+                        cf = 1;
+                    }
+                    // if ( acceleration < 0.02) {
+                    V = ::KalmanFilter(&KF, V);
+                    cout << "tiaoshi3=" << V << endl;
+                    pxy = minbuff(sinta1, R, q, V);
+
+                    cv::circle(binary, pxy, 1, cv::Scalar(0, 255, 255), 5);
+
+                }
+            }
+        }
+        imshow("frame", binary);
+        waitKey(1);
+    }
+}
+
+void imageUpdatingThread(void)
+{
+    frameStream.getFrames();
+}
+
+void preimgUpdatingThread(void)
+{
+    Frame frame;
+    int n=0;
+    while(true)
+    {
+        // FPS
+        double t = (double)getTickCount();
+
+        if(frameStream.getLatest(frame))
+        {
+            src=frame.frame;
+        }
+        else
+        {
+            //cout<<"getLast test"<<endl;
+            continue;
+        }
+        //装甲板检测识别子核心集成函数
+        armorDetector.prerun(src);
+
+        //FPS
+        t = (getTickCount() - t) / getTickFrequency();
+        cout<<"wasteime_preimg:"<<t*1000<<"n_pre:"<<n++<<endl;
+        //printf("FPS_preimg: %f\n", 1/t);
+
+        timecolck=frame.ftime;
+        cout<<"timecolck:"<<timecolck;
+
+        rwable_serialr=true;
+        cv_serialr.notify_one();
+    }
+}
+
+
+void serialRUpdatingThread(void)
+{
+
+    int n=0;
+    while(true)
+    {
+        // FPS
+        double t = (double)getTickCount();
+
+        myserial.SerialWaterFish(armorReceive.enemycolor,armorReceive.targetnum,
+                                 armorReceive.predict,armorReceive.bullet_v,armorReceive.gyro_pitch,armorReceive.gyro_yaw);
+        //FPS
+        t = (getTickCount() - t) / getTickFrequency();
+//        cout<<"wasteime_serial:"<<t*1000<<"n_serial:"<<n++<<endl;
+        //printf("FPS_serial: %f\n", 1/t);
+
+        rwable_date=true;
+        cv_date.notify_one();
+    }
+}
+
+void datasolutingThread(void)
+{
+    //waitKey(3000);
+    int n=0;
+    mutex copy_pre;
+    while (true)
+    {
+        // FPS
+        double t = (double)getTickCount();
+
+        std::unique_lock<std::mutex> lck_serialr(mtx_serialr);
+        cv_serialr.wait(lck_serialr,[](){return rwable_serialr;});
+
+        std::unique_lock<std::mutex> lck_date(mtx_date);
+        cv_date.wait(lck_date,[](){return rwable_date;});
+
+        copy_pre.lock();
+        armorDetector.daterun();
+        copy_pre.unlock();
+
+        //FPS
+        double t1 = (getTickCount() - t) / getTickFrequency();
+        cout<<"wasteime_copy:"<<t1*1000<<endl;
+
+        armorDetector.setEnemyColor(armorReceive.enemycolor); //here set enemy color
+        armorDetector.setTargetNum(armorReceive.targetnum);
+        angleSolver.setBulletSpeed(armorReceive.bullet_v);
+        angleSolver.setGyroYaw(armorReceive.gyro_yaw);
+        angleSolver.setGyroPitch(armorReceive.gyro_pitch);
+
+        //给角度解算传目标装甲板值的实例
+        if (armorDetector.isFoundArmor())
+        {
+            armorDetector.getTargetInfo(armorReceive.contourPoints, armorReceive.centerPoint, armorReceive.type);
+            angleSolver.getAngle(armorReceive.contourPoints, armorReceive.centerPoint, armorReceive.type,
+                armorTransmit.yaw, armorTransmit.pitch, armorTransmit.distance, armorTransmit.tar_predict);
+        }
+
+        if (armorDetector.isFoundArmor())
+        {
+            //printf("Found Target! Center(%d,%d)\n", (int)centerPoint.x, (int)centerPoint.y);
+            cout << "Yaw: " << armorTransmit.yaw << "Pitch: " << armorTransmit.pitch << "Distance: " << armorTransmit.distance << endl;
+        }
+
+#ifdef DEBUG_MODE
+            //********************** DEGUG **********************//
+            //装甲板检测识别调试参数是否输出,disable motor action
+            //param:
+            //		1.showSrcImg_ON,		  是否展示原图
+            //		2.bool showSrcBinary_ON,  是否展示二值图
+            //		3.bool showLights_ON,	  是否展示灯条图
+            //		4.bool showArmors_ON,	  是否展示装甲板图
+            //		5.bool textLights_ON,	  是否输出灯条信息
+            //		6.bool textArmors_ON,	  是否输出装甲板信息
+            //		7.bool textScores_ON	  是否输出打击度信息
+            //					    1  2  3  4  5  6  7
+        armorDetector.showDebugInfo(0, 0, 0, 1, 0, 0, 0);
+        if (armorDetector.isFoundArmor())
+        {
+            //角度解算调试参数是否输出
+            //param:
+            //		1.showCurrentResult,	  是否展示当前解算结果
+            //		2.bool showTVec,          是否展示目标坐标
+            //		3.bool showP4P,           是否展示P4P算法计算结果
+            //		4.bool showPinHole,       是否展示PinHole算法计算结果
+            //		5.bool showCompensation,  是否输出补偿结果
+            //		6.bool showCameraParams	  是否输出相机参数
+            //					      1  2  3  4  5  6
+            angleSolver.showDebugInfo(1, 0, 0, 0, 0, 0);
+        }
+        waitKey(1);
+#endif
+
+        //FPS
+        t = (getTickCount() - t) / getTickFrequency();
+        cout<<"wasteime_date:"<<t*1000<<"n_date:"<<n++<<endl;
+        printf("FPS_date: %f\n", 1/t);
+
+        rwable_serialr=false;
+        rwable_date=false;
+        rwable_serialt=true;
+        cv_serialt.notify_one();
+    }
+}
+void serialTUpdatingThread(void)
+{
+    while(true)
+    {
+        std::unique_lock<std::mutex> lck_serialt(mtx_serialt);
+        cv_serialt.wait(lck_serialt,[](){return rwable_serialt;});
+
+        myserial.SerialFireFish(armorTransmit.yaw, armorTransmit.pitch,armorTransmit.distance, true, armorDetector.isFoundArmor());
+
+        rwable_serialt=false;
+    }
+}
